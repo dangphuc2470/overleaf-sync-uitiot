@@ -121,13 +121,14 @@ def main(ctx, local, remote, project_name, cookie_path, sync_path, olignore_path
 @main.command()
 @click.option('--path', 'cookie_path', default=".olauth", type=click.Path(exists=False),
               help="Path to store the persisted Overleaf cookie.")
+@click.option('--keep-browser', 'keep_browser', is_flag=True, help="Keep browser window open after successful login.")
 @click.option('-v', '--verbose', 'verbose', is_flag=True, help="Enable extended error logging.")
-def login(cookie_path, verbose):
+def login(cookie_path, keep_browser, verbose):
     if os.path.isfile(cookie_path) and not click.confirm(
             'Persisted Overleaf cookie already exist. Do you want to override it?'):
         return
     click.clear()
-    execute_action(lambda: login_handler(cookie_path), "Login",
+    execute_action(lambda: login_handler(cookie_path, keep_browser), "Login",
                    "Login successful. Cookie persisted as `" + click.format_filename(
                        cookie_path) + "`. You may now sync your project.",
                    "Login failed. Please try again.", verbose)
@@ -203,8 +204,8 @@ def download_pdf(project_name, download_path, cookie_path, verbose):
                    "Downloading project's PDF failed. Please try again.", verbose)
 
 
-def login_handler(path):
-    store = olbrowserlogin.login()
+def login_handler(path, keep_browser=False):
+    store = olbrowserlogin.login(keep_open=keep_browser)
     if store is None:
         return False
     with open(path, 'wb+') as f:

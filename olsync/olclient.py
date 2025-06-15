@@ -17,14 +17,14 @@ from socketIO_client import SocketIO
 import time
 
 # Where to get the CSRF Token and where to send the login request to
-LOGIN_URL = "https://www.overleaf.com/login"
-PROJECT_URL = "https://www.overleaf.com/project"  # The dashboard URL
+LOGIN_URL = "https://latex.uitiot.vn/login"
+PROJECT_URL = "https://latex.uitiot.vn/project"  # The dashboard URL
 # The URL to download all the files in zip format
-DOWNLOAD_URL = "https://www.overleaf.com/project/{}/download/zip"
-UPLOAD_URL = "https://www.overleaf.com/project/{}/upload"  # The URL to upload files
-FOLDER_URL = "https://www.overleaf.com/project/{}/folder"  # The URL to create folders
-DELETE_URL = "https://www.overleaf.com/project/{}/doc/{}"  # The URL to delete files
-COMPILE_URL = "https://www.overleaf.com/project/{}/compile?enable_pdf_caching=true"  # The URL to compile the project
+DOWNLOAD_URL = "https://latex.uitiot.vn/project/{}/download/zip"
+UPLOAD_URL = "https://latex.uitiot.vn/project/{}/upload"  # The URL to upload files
+FOLDER_URL = "https://latex.uitiot.vn/project/{}/folder"  # The URL to create folders
+DELETE_URL = "https://latex.uitiot.vn/project/{}/doc/{}"  # The URL to delete files
+COMPILE_URL = "https://latex.uitiot.vn/project/{}/compile?enable_pdf_caching=true"  # The URL to compile the project
 BASE_URL = "https://www.overleaf.com"  # The Overleaf Base URL
 PATH_SEP = "/"  # Use hardcoded path separator for both windows and posix system
 
@@ -88,9 +88,64 @@ class OverleafClient(object):
         Returns: List of project objects
         """
         projects_page = reqs.get(PROJECT_URL, cookies=self._cookie)
-        json_content = json.loads(
-            BeautifulSoup(projects_page.content, 'html.parser').find('meta', {'name': 'ol-projects'}).get('content'))
-        return list(OverleafClient.filter_projects(json_content))
+        
+        # Debug: Check if we're properly authenticated
+        if "login" in projects_page.url.lower():
+            raise Exception(f"Authentication failed - redirected to login page: {projects_page.url}")
+        
+        soup = BeautifulSoup(projects_page.content, 'html.parser')
+        
+        # Try multiple meta tag names for different Overleaf versions
+        ol_projects_meta = (
+            soup.find('meta', {'name': 'ol-projects'}) or
+            soup.find('meta', {'name': 'ol-prefetchedProjectsBlob'})
+        )
+        
+        if ol_projects_meta is None:
+            # Try alternative methods to get project data
+            print("⚠️  Meta tag 'ol-projects' not found. Trying alternative methods...")
+            
+            # Method 1: Try to find window.data or similar
+            scripts = soup.find_all('script')
+            for script in scripts:
+                if script.string and 'project' in script.string.lower():
+                    # Look for JSON data in scripts
+                    import re
+                    json_pattern = r'window\.(?:data|projects|state)\s*=\s*(\{.*?\});'
+                    matches = re.findall(json_pattern, script.string, re.DOTALL)
+                    for match in matches:
+                        try:
+                            data = json.loads(match)
+                            if 'projects' in data or isinstance(data, list):
+                                print("✅ Found project data in window variable")
+                                return list(OverleafClient.filter_projects(data.get('projects', data)))
+                        except:
+                            continue
+            
+            # Method 2: Look for data in body or other elements
+            # This is a fallback - return empty list for now
+            print("❌ Could not find project data with any method")
+            print("🌐 Page title:", soup.find('title').text if soup.find('title') else 'Unknown')
+            print("🔍 Available ol-* meta tags:")
+            for meta in soup.find_all('meta'):
+                name = meta.get('name', '')
+                if name.startswith('ol-'):
+                    content = meta.get('content', '')[:50] + '...' if len(meta.get('content', '')) > 50 else meta.get('content', '')
+                    print(f"  {name}: {content}")
+            
+            return []
+        
+        json_content = json.loads(ol_projects_meta.get('content'))
+        
+        # Handle different data formats
+        if 'projects' in json_content:
+            # ol-prefetchedProjectsBlob format: {"totalSize": N, "projects": [...]}
+            projects_data = json_content['projects']
+        else:
+            # ol-projects format: [project, project, ...]
+            projects_data = json_content
+            
+        return list(OverleafClient.filter_projects(projects_data))
 
     def get_project(self, project_name):
         """
@@ -98,11 +153,9 @@ class OverleafClient(object):
         Params: project_name, the name of the project
         Returns: project object
         """
-
-        projects_page = reqs.get(PROJECT_URL, cookies=self._cookie)
-        json_content = json.loads(
-            BeautifulSoup(projects_page.content, 'html.parser').find('meta', {'name': 'ol-projects'}).get('content'))
-        return next(OverleafClient.filter_projects(json_content, {"name": project_name}), None)
+        # Use the improved all_projects method and filter
+        all_projects = self.all_projects()
+        return next((p for p in all_projects if p.get('name') == project_name), None)
 
     def download_project(self, project_id):
         """
@@ -162,11 +215,17 @@ class OverleafClient(object):
             project_infos = project_infos_dict
 
         # Convert cookie from CookieJar to string
-        cookie = "GCLB={}; overleaf_session2={}" \
-            .format(
-            self._cookie["GCLB"],
-            self._cookie["overleaf_session2"]
-        )
+        cookie_parts = []
+        
+        # Handle different cookie formats for different Overleaf instances
+        if "GCLB" in self._cookie:
+            cookie_parts.append(f"GCLB={self._cookie['GCLB']}")
+        if "overleaf_session2" in self._cookie:
+            cookie_parts.append(f"overleaf_session2={self._cookie['overleaf_session2']}")
+        if "overleaf.sid" in self._cookie:
+            cookie_parts.append(f"overleaf.sid={self._cookie['overleaf.sid']}")
+            
+        cookie = "; ".join(cookie_parts)
 
         # Connect to Overleaf Socket.IO, send a time parameter and the cookies
         socket_io = SocketIO(
